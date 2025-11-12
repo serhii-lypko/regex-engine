@@ -1,173 +1,77 @@
-use std::fmt;
+use std::iter::Peekable;
+use std::str::Chars;
+
+use crate::models::{ParseError, Quantifier, Token};
 
 #[derive(Debug)]
 pub(crate) struct Parser<'a> {
-    re: &'a str,
-
-    // TODO -> would be nice to have stack as separate struct
-    stack: Vec<Vec<Token>>,
-
-    output: Vec<Token>,
+    /// The Peekable iterator is shared across all recursive calls when grouping
+    chars: Peekable<Chars<'a>>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(re: &'a str) -> Self {
         Self {
-            re,
-            stack: vec![vec![]],
-            output: vec![],
+            chars: re.chars().peekable(),
         }
     }
 
-    /// Returns array of states that will be used to process an input string.
-    pub fn parse(mut self) -> Result<Vec<Token>, ParseError> {
-        // Should iterate over the sequance of regex and generate or modify the state
+    pub fn parse(&mut self) -> Result<Vec<Token>, ParseError> {
+        let mut output: Vec<Token> = vec![];
 
-        let chars: Vec<char> = self.re.chars().collect();
-        let mut i = 0;
-
-        while i < self.re.len() {
-            let char = chars[i];
-
+        while let Some(char) = self.chars.next() {
             match char {
-                '.' => {
-                    let token = Token::Wildcard(Quantifier::ExactlyOne);
-                    self.stack.last_mut().map(|foo| {
-                        foo.push(token);
-                    });
-                    i = i + 1;
-                }
+                '.' => output.push(Token::Wildcard(Quantifier::ExactlyOne)),
 
-                '?' => self.handle_zero_or_quantifier(|last_token| {
-                    last_token.set_quantifier(Quantifier::ZeroOrOne);
-                    i = i + 1;
-                })?,
-                '*' => self.handle_zero_or_quantifier(|last_token| {
-                    last_token.set_quantifier(Quantifier::ZeroOrMore);
-                    i = i + 1;
-                })?,
-                '+' => {
-                    let stack_top = self
-                        .stack
-                        .last_mut()
-                        .ok_or(ParseError::UnexpectedQuantifier)?;
+                '?' => match output.last_mut() {
+                    Some(token) => {
+                        if *token.quantifier() != Quantifier::ExactlyOne {
+                            return Err(ParseError::RepeatedQuantifier);
+                        }
 
-                    let last_element = stack_top
-                        .last_mut()
-                        .ok_or(ParseError::UnexpectedQuantifier)?;
-
-                    if *last_element.quantifier() != Quantifier::ExactlyOne {
-                        return Err(ParseError::RepeatedQuantifier);
+                        token.set_quantifier(Quantifier::ZeroOrOne);
                     }
+                    None => return Err(ParseError::UnexpectedQuantifier),
+                },
+                '*' => match output.last_mut() {
+                    Some(token) => {
+                        if *token.quantifier() != Quantifier::ExactlyOne {
+                            return Err(ParseError::RepeatedQuantifier);
+                        }
 
-                    let mut one_more = last_element.clone();
-                    one_more.set_quantifier(Quantifier::ZeroOrMore);
-                    stack_top.push(one_more);
-
-                    i = i + 1;
-                }
-
-                '(' => {
-                    self.stack.push(vec![]);
-                    i = i + 1;
-                }
-                ')' => {
-                    if self.stack.len() <= 1 {
-                        return Err(ParseError::NoGroupToClose);
+                        token.set_quantifier(Quantifier::ZeroOrMore);
                     }
+                    None => return Err(ParseError::UnexpectedQuantifier),
+                },
+                '+' => match output.last_mut() {
+                    Some(token) => {
+                        if *token.quantifier() != Quantifier::ExactlyOne {
+                            return Err(ParseError::RepeatedQuantifier);
+                        }
 
-                    let states = self.stack.pop().ok_or(ParseError::NoGroupToClose)?;
-                    let token = Token::GroupElement(Quantifier::ExactlyOne, states);
+                        token.set_quantifier(Quantifier::ExactlyOne);
 
-                    self.stack.last_mut().map(|foo| {
-                        foo.push(token);
-                    });
+                        let mut one_more = token.clone();
+                        one_more.set_quantifier(Quantifier::ZeroOrMore);
+                        output.push(one_more);
+                    }
+                    None => return Err(ParseError::UnexpectedQuantifier),
+                },
 
-                    i = i + 1;
-                }
+                '\\' => match self.chars.next() {
+                    Some(char) => output.push(Token::Element(Quantifier::ExactlyOne, char)),
+                    None => return Err(ParseError::BadEscapeChar),
+                },
 
-                _ => {
-                    //
-                }
+                // TODO -> handle ParseError::NoGroupToClose? like "abc)" -> pass flag is_group?
+                '(' => output.push(Token::GroupElement(Quantifier::ExactlyOne, self.parse()?)),
+                ')' => return Ok(output),
+
+                _ => output.push(Token::Element(Quantifier::ExactlyOne, char)),
             }
         }
 
-        dbg!(self.stack);
-
-        Ok(self.output)
-    }
-
-    fn handle_zero_or_quantifier<H>(&mut self, handler: H) -> Result<(), ParseError>
-    where
-        H: FnOnce(&mut Token) -> (),
-    {
-        let last_element = self.stack.last_mut().and_then(|seq| seq.last_mut());
-
-        match last_element {
-            // Check of regex does not start from the quantifier.
-            None => return Err(ParseError::UnexpectedQuantifier),
-            Some(last_token) => {
-                // Checks that expressions like /a++?/, /a*+?/, etc. are not allowed.
-                if *last_token.quantifier() != Quantifier::ExactlyOne {
-                    return Err(ParseError::RepeatedQuantifier);
-                }
-
-                handler(last_token);
-                return Ok(());
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Token {
-    Wildcard(Quantifier),
-    GroupElement(Quantifier, Vec<Token>),
-}
-
-impl Token {
-    pub fn quantifier(&self) -> &Quantifier {
-        match self {
-            Token::Wildcard(quantifier) => quantifier,
-            Token::GroupElement(quantifier, _states) => todo!(),
-        }
-    }
-
-    pub fn set_quantifier(&mut self, new_quantifier: Quantifier) {
-        match self {
-            Token::Wildcard(quantifier) => *quantifier = new_quantifier,
-            Token::GroupElement(quantifier, _states) => todo!(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Quantifier {
-    ExactlyOne,
-    ZeroOrOne,
-    ZeroOrMore,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum ParseError {
-    UnexpectedQuantifier,
-    RepeatedQuantifier,
-    NoGroupToClose,
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ParseError::UnexpectedQuantifier => {
-                write!(f, "Regex should not start from the quantifier")
-            }
-            ParseError::RepeatedQuantifier => {
-                write!(f, "Quantifier must follow an unquantified element or group")
-            }
-            ParseError::NoGroupToClose => {
-                write!(f, "No group to close")
-            }
-        }
+        Ok(output)
     }
 }
 
@@ -176,41 +80,251 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generic() {
-        let parser = Parser::new(".+(");
-        let res = parser.parse();
+    fn test_simple_characters() {
+        let mut parser = Parser::new("abc");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, 'a'));
+        assert_eq!(res[1], Token::Element(Quantifier::ExactlyOne, 'b'));
+        assert_eq!(res[2], Token::Element(Quantifier::ExactlyOne, 'c'));
     }
 
     #[test]
-    fn should_not_start_from_quanitifer() {
-        let parser = Parser::new("?");
-        let res = parser.parse();
-        assert_eq!(res, Err(ParseError::UnexpectedQuantifier));
+    fn test_wildcard() {
+        let mut parser = Parser::new("a.c");
+        let res = parser.parse().unwrap();
 
-        let parser = Parser::new("*");
-        let res = parser.parse();
-        assert_eq!(res, Err(ParseError::UnexpectedQuantifier));
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, 'a'));
+        assert_eq!(res[1], Token::Wildcard(Quantifier::ExactlyOne));
+        assert_eq!(res[2], Token::Element(Quantifier::ExactlyOne, 'c'));
+    }
 
-        let parser = Parser::new("+");
+    #[test]
+    fn test_zero_or_one_quantifier() {
+        let mut parser = Parser::new("a?");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0], Token::Element(Quantifier::ZeroOrOne, 'a'));
+    }
+
+    #[test]
+    fn test_zero_or_more_quantifier() {
+        let mut parser = Parser::new("a*");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0], Token::Element(Quantifier::ZeroOrMore, 'a'));
+    }
+
+    #[test]
+    fn test_one_or_more_quantifier() {
+        let mut parser = Parser::new("a+");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, 'a'));
+        assert_eq!(res[1], Token::Element(Quantifier::ZeroOrMore, 'a'));
+    }
+
+    #[test]
+    fn test_wildcard_with_quantifiers() {
+        let mut parser = Parser::new(".*");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0], Token::Wildcard(Quantifier::ZeroOrMore));
+    }
+
+    #[test]
+    fn test_escape_special_chars() {
+        let mut parser = Parser::new(r"\+\?\*");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, '+'));
+        assert_eq!(res[1], Token::Element(Quantifier::ExactlyOne, '?'));
+        assert_eq!(res[2], Token::Element(Quantifier::ExactlyOne, '*'));
+    }
+
+    #[test]
+    fn test_escape_regular_chars() {
+        let mut parser = Parser::new(r"\a\b");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, 'a'));
+        assert_eq!(res[1], Token::Element(Quantifier::ExactlyOne, 'b'));
+    }
+
+    #[test]
+    fn test_simple_group() {
+        let mut parser = Parser::new("(ab)");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 1);
+        match &res[0] {
+            Token::GroupElement(q, tokens) => {
+                assert_eq!(*q, Quantifier::ExactlyOne);
+                assert_eq!(tokens.len(), 2);
+                assert_eq!(tokens[0], Token::Element(Quantifier::ExactlyOne, 'a'));
+                assert_eq!(tokens[1], Token::Element(Quantifier::ExactlyOne, 'b'));
+            }
+            _ => panic!("Expected GroupElement"),
+        }
+    }
+
+    #[test]
+    fn test_group_with_quantifier() {
+        let mut parser = Parser::new("(ab)?");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 1);
+        match &res[0] {
+            Token::GroupElement(q, _) => {
+                assert_eq!(*q, Quantifier::ZeroOrOne);
+            }
+            _ => panic!("Expected GroupElement"),
+        }
+    }
+
+    #[test]
+    fn test_nested_groups() {
+        let mut parser = Parser::new("(a(bc)d)");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 1);
+        match &res[0] {
+            Token::GroupElement(q, outer_tokens) => {
+                assert_eq!(*q, Quantifier::ExactlyOne);
+                assert_eq!(outer_tokens.len(), 3); // a, (bc), d
+
+                assert_eq!(outer_tokens[0], Token::Element(Quantifier::ExactlyOne, 'a'));
+
+                match &outer_tokens[1] {
+                    Token::GroupElement(_, inner_tokens) => {
+                        assert_eq!(inner_tokens.len(), 2);
+                        assert_eq!(inner_tokens[0], Token::Element(Quantifier::ExactlyOne, 'b'));
+                        assert_eq!(inner_tokens[1], Token::Element(Quantifier::ExactlyOne, 'c'));
+                    }
+                    _ => panic!("Expected nested GroupElement"),
+                }
+
+                assert_eq!(outer_tokens[2], Token::Element(Quantifier::ExactlyOne, 'd'));
+            }
+            _ => panic!("Expected GroupElement"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_groups() {
+        let mut parser = Parser::new("(ab)(cd)");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 2);
+        match (&res[0], &res[1]) {
+            (Token::GroupElement(_, g1), Token::GroupElement(_, g2)) => {
+                assert_eq!(g1.len(), 2);
+                assert_eq!(g2.len(), 2);
+            }
+            _ => panic!("Expected two GroupElements"),
+        }
+    }
+
+    #[test]
+    fn test_complex_pattern() {
+        let mut parser = Parser::new("a+b*(cd)?");
+        let res = parser.parse().unwrap();
+
+        // a+ produces 2 tokens: a, a*
+        // b* produces 1 token: b*
+        // (cd)? produces 1 token: group?
+        assert_eq!(res.len(), 4);
+    }
+
+    // Error cases
+
+    #[test]
+    fn test_should_not_start_with_quantifier_question() {
+        let mut parser = Parser::new("?");
         let res = parser.parse();
         assert_eq!(res, Err(ParseError::UnexpectedQuantifier));
     }
 
     #[test]
-    fn should_not_have_repeated_quantifiers() {
-        let parser = Parser::new("a++?");
+    fn test_should_not_start_with_quantifier_star() {
+        let mut parser = Parser::new("*");
         let res = parser.parse();
-
-        // TODO ->
+        assert_eq!(res, Err(ParseError::UnexpectedQuantifier));
     }
 
     #[test]
-    fn group_should_be_closed() {
-        let parser = Parser::new("(.)");
+    fn test_should_not_start_with_quantifier_plus() {
+        let mut parser = Parser::new("+");
         let res = parser.parse();
-
-        // TODO ->
+        assert_eq!(res, Err(ParseError::UnexpectedQuantifier));
     }
 
-    // TODO -> test nested groups
+    #[test]
+    fn test_repeated_quantifier_star_question() {
+        let mut parser = Parser::new("a*?");
+        let res = parser.parse();
+        assert_eq!(res, Err(ParseError::RepeatedQuantifier));
+    }
+
+    #[test]
+    fn test_repeated_quantifier_plus_star() {
+        let mut parser = Parser::new("a+*");
+        let res = parser.parse();
+        assert_eq!(res, Err(ParseError::RepeatedQuantifier));
+    }
+
+    #[test]
+    fn test_repeated_quantifier_question_plus() {
+        let mut parser = Parser::new("a?+");
+        let res = parser.parse();
+        assert_eq!(res, Err(ParseError::RepeatedQuantifier));
+    }
+
+    #[test]
+    fn test_bad_escape_at_end() {
+        let mut parser = Parser::new(r"ab\");
+        let res = parser.parse();
+        assert_eq!(res, Err(ParseError::BadEscapeChar));
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let mut parser = Parser::new("");
+        let res = parser.parse().unwrap();
+        assert_eq!(res.len(), 0);
+    }
+
+    #[test]
+    fn test_empty_group() {
+        let mut parser = Parser::new("()");
+        let res = parser.parse().unwrap();
+
+        assert_eq!(res.len(), 1);
+        match &res[0] {
+            Token::GroupElement(_, tokens) => {
+                assert_eq!(tokens.len(), 0);
+            }
+            _ => panic!("Expected GroupElement"),
+        }
+    }
+
+    #[test]
+    fn test_unclosed_group_completes_at_end() {
+        let mut parser = Parser::new("(abc");
+        let res = parser.parse().unwrap();
+
+        dbg!(res);
+
+        // TODO
+
+        // assert_eq!(res.len(), 3);
+    }
 }

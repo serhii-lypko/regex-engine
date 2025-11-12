@@ -52,6 +52,7 @@
         - make thread safe?
 */
 
+mod models;
 mod parser;
 
 use parser::Parser;
@@ -71,5 +72,6 @@ fn playground() {
 }
 
 fn main() {
-    //
+    let mut parser = Parser::new("abc");
+    let parse_res = parser.parse().unwrap();
 }
