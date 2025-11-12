@@ -1,9 +1,13 @@
 use std::fmt;
 
 #[derive(Debug)]
-pub struct Parser<'a> {
+pub(crate) struct Parser<'a> {
     re: &'a str,
+
+    // TODO -> would be nice to have stack as separate struct
     stack: Vec<Vec<Token>>,
+
+    output: Vec<Token>,
 }
 
 impl<'a> Parser<'a> {
@@ -11,57 +15,93 @@ impl<'a> Parser<'a> {
         Self {
             re,
             stack: vec![vec![]],
+            output: vec![],
         }
     }
 
     /// Returns array of states that will be used to process an input string.
-    pub fn parse(&mut self) -> Result<(), ParseError> {
+    pub fn parse(mut self) -> Result<Vec<Token>, ParseError> {
         // Should iterate over the sequance of regex and generate or modify the state
 
-        for char in self.re.chars() {
+        let chars: Vec<char> = self.re.chars().collect();
+        let mut i = 0;
+
+        while i < self.re.len() {
+            let char = chars[i];
+
             match char {
                 '.' => {
                     let token = Token::Wildcard(Quantifier::ExactlyOne);
                     self.stack.last_mut().map(|foo| {
                         foo.push(token);
+                        i = i + 1;
                     });
                 }
 
-                // Quantifiers
-                '?' => {
-                    let last_element = self.stack.last_mut().and_then(|seq| seq.last_mut());
+                '?' => self.handle_zero_or_quantifier(|last_token| {
+                    last_token.set_quantifier(Quantifier::ZeroOrOne);
+                    i = i + 1;
+                })?,
 
-                    match last_element {
-                        // Check of regex does not start from the quantifier.
-                        None => return Err(ParseError::UnexpectedQuantifier),
-                        Some(last_token) => {
-                            // Checks that expressions like /a++?/, /a*+?/, etc. are not allowed.
-                            if *last_token.quantifier() != Quantifier::ExactlyOne {
-                                return Err(ParseError::RepeatedQuantifier);
-                            }
+                '*' => self.handle_zero_or_quantifier(|last_token| {
+                    last_token.set_quantifier(Quantifier::ZeroOrMore);
+                    i = i + 1;
+                })?,
 
-                            last_token.set_quantifier(Quantifier::ZeroOrOne);
+                '+' => {
+                    let stack_top = self
+                        .stack
+                        .last_mut()
+                        .ok_or(ParseError::UnexpectedQuantifier)?;
 
-                            dbg!(&self.stack);
+                    let last_element = stack_top
+                        .last_mut()
+                        .ok_or(ParseError::UnexpectedQuantifier)?;
 
-                            return Ok(());
-                        }
+                    if *last_element.quantifier() != Quantifier::ExactlyOne {
+                        return Err(ParseError::RepeatedQuantifier);
                     }
+
+                    let mut one_more = last_element.clone();
+                    one_more.set_quantifier(Quantifier::ZeroOrMore);
+                    stack_top.push(one_more);
+
+                    i = i + 1;
                 }
-                '+' => todo!(),
-                '*' => todo!(),
 
                 _ => todo!(),
             }
         }
 
-        Ok(())
+        dbg!(self.stack);
+
+        Ok(self.output)
+    }
+
+    fn handle_zero_or_quantifier<H>(&mut self, handler: H) -> Result<(), ParseError>
+    where
+        H: FnOnce(&mut Token) -> (),
+    {
+        let last_element = self.stack.last_mut().and_then(|seq| seq.last_mut());
+
+        match last_element {
+            // Check of regex does not start from the quantifier.
+            None => return Err(ParseError::UnexpectedQuantifier),
+            Some(last_token) => {
+                // Checks that expressions like /a++?/, /a*+?/, etc. are not allowed.
+                if *last_token.quantifier() != Quantifier::ExactlyOne {
+                    return Err(ParseError::RepeatedQuantifier);
+                }
+
+                handler(last_token);
+                return Ok(());
+            }
+        }
     }
 }
 
-// TODO -> not sure if such name is appropriate?
-#[derive(Debug)]
-enum Token {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Token {
     Wildcard(Quantifier),
 }
 
@@ -79,10 +119,11 @@ impl Token {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum Quantifier {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Quantifier {
     ExactlyOne,
     ZeroOrOne,
+    ZeroOrMore,
 }
 
 #[derive(Debug, PartialEq)]
@@ -110,20 +151,23 @@ mod tests {
 
     #[test]
     fn generic() {
-        let mut parser = Parser::new(".?");
+        let parser = Parser::new(".+");
         let res = parser.parse();
-
-        //
     }
 
     #[test]
     fn should_not_start_from_quanitifer() {
-        let mut parser = Parser::new("?");
+        let parser = Parser::new("?");
         let res = parser.parse();
-
         assert_eq!(res, Err(ParseError::UnexpectedQuantifier));
 
-        // TODO -> more cases
+        let parser = Parser::new("*");
+        let res = parser.parse();
+        assert_eq!(res, Err(ParseError::UnexpectedQuantifier));
+
+        let parser = Parser::new("+");
+        let res = parser.parse();
+        assert_eq!(res, Err(ParseError::UnexpectedQuantifier));
     }
 
     #[test]
