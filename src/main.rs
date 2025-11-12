@@ -6,7 +6,6 @@
     {N} – Exactly N number of times (where N is a number)
     {N,} – N or more number of times (where N is a number)
     {N,M} – Between N and M number of times (where N and M are numbers and N < M)
-    *? – Zero or more, but stop after first match
 
     Square brackets "[]" define a character class:
     A character class matches exactly one character from the set inside.

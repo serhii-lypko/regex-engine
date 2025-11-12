@@ -34,20 +34,18 @@ impl<'a> Parser<'a> {
                     let token = Token::Wildcard(Quantifier::ExactlyOne);
                     self.stack.last_mut().map(|foo| {
                         foo.push(token);
-                        i = i + 1;
                     });
+                    i = i + 1;
                 }
 
                 '?' => self.handle_zero_or_quantifier(|last_token| {
                     last_token.set_quantifier(Quantifier::ZeroOrOne);
                     i = i + 1;
                 })?,
-
                 '*' => self.handle_zero_or_quantifier(|last_token| {
                     last_token.set_quantifier(Quantifier::ZeroOrMore);
                     i = i + 1;
                 })?,
-
                 '+' => {
                     let stack_top = self
                         .stack
@@ -69,7 +67,28 @@ impl<'a> Parser<'a> {
                     i = i + 1;
                 }
 
-                _ => todo!(),
+                '(' => {
+                    self.stack.push(vec![]);
+                    i = i + 1;
+                }
+                ')' => {
+                    if self.stack.len() <= 1 {
+                        return Err(ParseError::NoGroupToClose);
+                    }
+
+                    let states = self.stack.pop().ok_or(ParseError::NoGroupToClose)?;
+                    let token = Token::GroupElement(Quantifier::ExactlyOne, states);
+
+                    self.stack.last_mut().map(|foo| {
+                        foo.push(token);
+                    });
+
+                    i = i + 1;
+                }
+
+                _ => {
+                    //
+                }
             }
         }
 
@@ -103,18 +122,21 @@ impl<'a> Parser<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Token {
     Wildcard(Quantifier),
+    GroupElement(Quantifier, Vec<Token>),
 }
 
 impl Token {
     pub fn quantifier(&self) -> &Quantifier {
         match self {
             Token::Wildcard(quantifier) => quantifier,
+            Token::GroupElement(quantifier, _states) => todo!(),
         }
     }
 
     pub fn set_quantifier(&mut self, new_quantifier: Quantifier) {
         match self {
             Token::Wildcard(quantifier) => *quantifier = new_quantifier,
+            Token::GroupElement(quantifier, _states) => todo!(),
         }
     }
 }
@@ -130,6 +152,7 @@ pub(crate) enum Quantifier {
 pub enum ParseError {
     UnexpectedQuantifier,
     RepeatedQuantifier,
+    NoGroupToClose,
 }
 
 impl fmt::Display for ParseError {
@@ -141,6 +164,9 @@ impl fmt::Display for ParseError {
             ParseError::RepeatedQuantifier => {
                 write!(f, "Quantifier must follow an unquantified element or group")
             }
+            ParseError::NoGroupToClose => {
+                write!(f, "No group to close")
+            }
         }
     }
 }
@@ -151,7 +177,7 @@ mod tests {
 
     #[test]
     fn generic() {
-        let parser = Parser::new(".+");
+        let parser = Parser::new(".+(");
         let res = parser.parse();
     }
 
@@ -172,9 +198,19 @@ mod tests {
 
     #[test]
     fn should_not_have_repeated_quantifiers() {
-        let mut parser = Parser::new("a++?");
+        let parser = Parser::new("a++?");
         let res = parser.parse();
 
         // TODO ->
     }
+
+    #[test]
+    fn group_should_be_closed() {
+        let parser = Parser::new("(.)");
+        let res = parser.parse();
+
+        // TODO ->
+    }
+
+    // TODO -> test nested groups
 }
