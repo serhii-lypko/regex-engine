@@ -1,5 +1,4 @@
 use std::iter::Peekable;
-use std::mem;
 use std::str::Chars;
 
 use crate::models::{ParseError, Quantifier, Token};
@@ -8,136 +7,77 @@ use crate::models::{ParseError, Quantifier, Token};
 pub(crate) struct Parser<'a> {
     /// The Peekable iterator is shared across all recursive calls when grouping
     chars: Peekable<Chars<'a>>,
-    stack: Vec<StackItem>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(re: &'a str) -> Self {
         Self {
             chars: re.chars().peekable(),
-            stack: vec![],
         }
     }
 
     pub fn parse(&mut self) -> Result<Vec<Token>, ParseError> {
+        let mut output: Vec<Token> = vec![];
+
         while let Some(char) = self.chars.next() {
             match char {
-                '.' => {
-                    let token = Token::Wildcard(Quantifier::ExactlyOne);
-                    self.stack.push(StackItem::Token(token));
-                }
+                '.' => output.push(Token::Wildcard(Quantifier::ExactlyOne)),
 
-                '?' => self.handle_base_quantifiers(Quantifier::ZeroOrOne)?,
-                '*' => self.handle_base_quantifiers(Quantifier::ZeroOrMore)?,
-
-                '+' => self.handle_plus_quantifier()?,
-
-                '(' => self.stack.push(StackItem::GroupOpen),
-                ')' => {
-                    let mut group_tokens: Vec<Token> = Vec::new();
-
-                    loop {
-                        match self.stack.pop() {
-                            Some(StackItem::Token(token)) => group_tokens.push(token),
-                            Some(StackItem::GroupOpen) => {
-                                // TODO -> use VecDeque with push front?
-                                group_tokens.reverse();
-
-                                let group =
-                                    Token::GroupElement(Quantifier::ExactlyOne, group_tokens);
-                                self.stack.push(StackItem::Token(group));
-                                break;
-                            }
-                            None => return Err(ParseError::NoGroupToClose),
+                '?' => match output.last_mut() {
+                    Some(token) => {
+                        if *token.quantifier() != Quantifier::ExactlyOne {
+                            return Err(ParseError::RepeatedQuantifier);
                         }
+
+                        token.set_quantifier(Quantifier::ZeroOrOne);
                     }
-                }
+                    None => return Err(ParseError::UnexpectedQuantifier),
+                },
+                '*' => match output.last_mut() {
+                    Some(token) => {
+                        if *token.quantifier() != Quantifier::ExactlyOne {
+                            return Err(ParseError::RepeatedQuantifier);
+                        }
+
+                        token.set_quantifier(Quantifier::ZeroOrMore);
+                    }
+                    None => return Err(ParseError::UnexpectedQuantifier),
+                },
+                '+' => match output.last_mut() {
+                    Some(token) => {
+                        if *token.quantifier() != Quantifier::ExactlyOne {
+                            return Err(ParseError::RepeatedQuantifier);
+                        }
+
+                        token.set_quantifier(Quantifier::ExactlyOne);
+
+                        let mut one_more = token.clone();
+                        one_more.set_quantifier(Quantifier::ZeroOrMore);
+                        output.push(one_more);
+                    }
+                    None => return Err(ParseError::UnexpectedQuantifier),
+                },
 
                 '\\' => match self.chars.next() {
-                    Some(char) => {
-                        let token = Token::Element(Quantifier::ExactlyOne, char);
-                        self.stack.push(StackItem::Token(token));
-                    }
+                    Some(char) => output.push(Token::Element(Quantifier::ExactlyOne, char)),
                     None => return Err(ParseError::BadEscapeChar),
                 },
 
-                _ => {
-                    let token = Token::Element(Quantifier::ExactlyOne, char);
-                    self.stack.push(StackItem::Token(token));
-                }
+                // TODO -> handle ParseError::NoGroupToClose? like "abc)" -> pass flag is_group?
+                '(' => output.push(Token::GroupElement(Quantifier::ExactlyOne, self.parse()?)),
+                ')' => return Ok(output),
+
+                _ => output.push(Token::Element(Quantifier::ExactlyOne, char)),
             }
         }
 
-        let stack = mem::take(&mut self.stack);
-        let result: Vec<Token> = stack
-            .into_iter()
-            .map(|stack_item| stack_item.into())
-            .collect();
-
-        Ok(result)
-    }
-
-    fn handle_base_quantifiers(&mut self, new_quantifier: Quantifier) -> Result<(), ParseError> {
-        match self.stack.last_mut() {
-            Some(stack_item) => match stack_item {
-                StackItem::Token(token) => {
-                    if *token.quantifier() != Quantifier::ExactlyOne {
-                        return Err(ParseError::RepeatedQuantifier);
-                    }
-
-                    token.set_quantifier(new_quantifier);
-                }
-                StackItem::GroupOpen => return Err(ParseError::UnexpectedQuantifier),
-            },
-            None => return Err(ParseError::UnexpectedQuantifier),
-        }
-
-        Ok(())
-    }
-
-    fn handle_plus_quantifier(&mut self) -> Result<(), ParseError> {
-        let last_token = self
-            .stack
-            .last_mut()
-            .ok_or(ParseError::UnexpectedQuantifier)?;
-
-        match last_token {
-            StackItem::Token(token) => {
-                if *token.quantifier() != Quantifier::ExactlyOne {
-                    return Err(ParseError::RepeatedQuantifier);
-                }
-
-                let mut one_more = token.clone();
-                one_more.set_quantifier(Quantifier::ZeroOrMore);
-                self.stack.push(StackItem::Token(one_more));
-
-                Ok(())
-            }
-            StackItem::GroupOpen => Err(ParseError::UnexpectedQuantifier),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum StackItem {
-    Token(Token),
-    GroupOpen,
-}
-
-impl From<StackItem> for Token {
-    fn from(value: StackItem) -> Self {
-        match value {
-            StackItem::Token(token) => token,
-            StackItem::GroupOpen => panic!("Unclosed group found: {}", ParseError::NoGroupToClose),
-        }
+        Ok(output)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // TODO -> more cases for unclosing group
 
     #[test]
     fn test_simple_characters() {
@@ -374,5 +314,17 @@ mod tests {
             }
             _ => panic!("Expected GroupElement"),
         }
+    }
+
+    #[test]
+    fn test_unclosed_group_completes_at_end() {
+        let mut parser = Parser::new("(abc");
+        let res = parser.parse().unwrap();
+
+        dbg!(res);
+
+        // TODO
+
+        // assert_eq!(res.len(), 3);
     }
 }
