@@ -1,4 +1,4 @@
-- Parse regex into an Abstract Syntax Tree (State enum)
+- Parse regex into an AST
 - Walk through the tree and input simultaneously
 - Recursively handle groups
 - Direct interpretation of the pattern
