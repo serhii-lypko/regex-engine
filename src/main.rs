@@ -56,22 +56,139 @@ mod models;
 mod parser;
 
 use parser::Parser;
-use regex::Regex;
 
-fn playground() {
-    let re = Regex::new(r"([a-z]+)@([a-z]+)\.com").unwrap();
-    let hay = "james@gmail.com";
+use crate::models::State;
+use std::collections::VecDeque;
 
-    let matches = re.captures(hay);
-    dbg!(matches);
+/// Where (is match, chars consumed)
+type MatchResult = (bool, usize);
 
-    let result = re.captures_iter(hay);
-    for res in result {
-        dbg!(res);
+// abc
+
+// fn match_state_against_index(state: State, i: usize, source: &Vec<char>) -> MatchResult {
+//     if i > source.len() {
+//         return (false, 0);
+//     }
+
+//     match state {
+//         State::Wildcard(_) => todo!(),
+//         State::GroupElement(quantifier, states) => todo!(),
+//         State::Element(_, char) => {
+//             if char != source[i] {
+//                 return (false, 1);
+//             } else {
+//                 return (true, 1);
+//             }
+//         }
+//     }
+// }
+
+// TODO -> wrapper func for external interface
+fn test(states: Vec<State>, source: &[char]) -> (bool, usize) {
+    // dbg!(&states);
+    // dbg!(&source);
+    // println!("-------");
+
+    let mut queue = VecDeque::from(states);
+
+    let mut i = 0;
+
+    while let Some(state) = queue.pop_front() {
+        match state.quantifier() {
+            models::Quantifier::ExactlyOne => {
+                if i >= source.len() {
+                    return (false, i);
+                }
+
+                match state {
+                    State::Wildcard(_) => todo!(),
+                    State::GroupElement(_, states) => todo!(),
+                    State::Element(_, char) => {
+                        if char != source[i] {
+                            return (false, i + 1);
+                        } else {
+                            i = i + 1;
+                        }
+                    }
+                }
+            }
+            models::Quantifier::ZeroOrOne => match state {
+                State::Wildcard(_) => todo!(),
+                State::GroupElement(_, states) => {
+                    let (is_match, chars_consumed) = test(states.clone(), &source[i..]);
+
+                    if is_match {
+                        i = i + chars_consumed;
+                    }
+                }
+                State::Element(_, char) => {
+                    if i >= source.len() {
+                        return (false, i);
+                    }
+
+                    if char == source[i] {
+                        i = i + 1;
+                    }
+                }
+            },
+            models::Quantifier::ZeroOrMore => match state {
+                State::Wildcard(_) => todo!(),
+                State::GroupElement(_, states) => loop {
+                    let (is_match, chars_consumed) = test(states.clone(), &source[i..]);
+
+                    if is_match {
+                        i = i + chars_consumed;
+                    }
+
+                    if !is_match || i >= source.len() {
+                        break;
+                    }
+                },
+                State::Element(_, char) => {
+                    if i >= source.len() {
+                        return (false, i);
+                    }
+
+                    if char == source[i] {
+                        while i < source.len() && char == source[i] {
+                            i = i + 1;
+                        }
+                    }
+                }
+            },
+        }
     }
+
+    return (true, i);
 }
 
 fn main() {
-    let mut parser = Parser::new("abc");
-    let parse_res = parser.parse().unwrap();
+    /*
+        ? – Zero or one
+        + – one or more
+        * – zero or more
+    */
+
+    // let re = "abc*1";
+    // let source = "abcccc1";
+
+    let re = "123(abc)?__(awesome)*__";
+    let source = "123__awesomeawesome__";
+
+    // let re = "ab(cde)*__";
+    // let re = "ab(cde)*";
+
+    // let re = "a?";
+    // let source = "";
+
+    let mut parser = Parser::new(re);
+    let parsed_states = parser.parse().unwrap();
+
+    // dbg!(&parsed_states);
+
+    // TODO -> should be part of init stages
+    let source: Vec<char> = source.chars().collect();
+    let (is_matched, _) = test(parsed_states, &source);
+
+    dbg!(is_matched);
 }

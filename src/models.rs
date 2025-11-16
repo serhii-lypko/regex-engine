@@ -1,26 +1,26 @@
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Token {
+pub(crate) enum State {
     Wildcard(Quantifier),
-    GroupElement(Quantifier, Vec<Token>),
+    GroupElement(Quantifier, Vec<State>),
     Element(Quantifier, char),
 }
 
-impl Token {
+impl State {
     pub fn quantifier(&self) -> &Quantifier {
         match self {
-            Token::Wildcard(quantifier) => quantifier,
-            Token::GroupElement(quantifier, _states) => quantifier,
-            Token::Element(quantifier, _value) => quantifier,
+            State::Wildcard(quantifier) => quantifier,
+            State::GroupElement(quantifier, _states) => quantifier,
+            State::Element(quantifier, _value) => quantifier,
         }
     }
 
     pub fn set_quantifier(&mut self, new_quantifier: Quantifier) {
         match self {
-            Token::Wildcard(quantifier) => *quantifier = new_quantifier,
-            Token::GroupElement(quantifier, _states) => *quantifier = new_quantifier,
-            Token::Element(quantifier, _value) => *quantifier = new_quantifier,
+            State::Wildcard(quantifier) => *quantifier = new_quantifier,
+            State::GroupElement(quantifier, _states) => *quantifier = new_quantifier,
+            State::Element(quantifier, _value) => *quantifier = new_quantifier,
         }
     }
 }

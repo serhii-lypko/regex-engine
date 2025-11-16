@@ -2,7 +2,7 @@ use std::iter::Peekable;
 use std::mem;
 use std::str::Chars;
 
-use crate::models::{ParseError, Quantifier, Token};
+use crate::models::{ParseError, Quantifier, State};
 
 #[derive(Debug)]
 pub(crate) struct Parser<'a> {
@@ -19,12 +19,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Result<Vec<Token>, ParseError> {
+    /// Returns an array of states
+    pub fn parse(&mut self) -> Result<Vec<State>, ParseError> {
         while let Some(char) = self.chars.next() {
             match char {
                 '.' => {
-                    let token = Token::Wildcard(Quantifier::ExactlyOne);
-                    self.stack.push(StackItem::Token(token));
+                    let token = State::Wildcard(Quantifier::ExactlyOne);
+                    self.stack.push(StackItem::State(token));
                 }
 
                 '?' => self.handle_base_quantifiers(Quantifier::ZeroOrOne)?,
@@ -34,18 +35,18 @@ impl<'a> Parser<'a> {
 
                 '(' => self.stack.push(StackItem::GroupOpen),
                 ')' => {
-                    let mut group_tokens: Vec<Token> = Vec::new();
+                    let mut group_tokens: Vec<State> = Vec::new();
 
                     loop {
                         match self.stack.pop() {
-                            Some(StackItem::Token(token)) => group_tokens.push(token),
+                            Some(StackItem::State(token)) => group_tokens.push(token),
                             Some(StackItem::GroupOpen) => {
                                 // TODO -> use VecDeque with push front?
                                 group_tokens.reverse();
 
                                 let group =
-                                    Token::GroupElement(Quantifier::ExactlyOne, group_tokens);
-                                self.stack.push(StackItem::Token(group));
+                                    State::GroupElement(Quantifier::ExactlyOne, group_tokens);
+                                self.stack.push(StackItem::State(group));
                                 break;
                             }
                             None => return Err(ParseError::NoGroupToClose),
@@ -55,21 +56,21 @@ impl<'a> Parser<'a> {
 
                 '\\' => match self.chars.next() {
                     Some(char) => {
-                        let token = Token::Element(Quantifier::ExactlyOne, char);
-                        self.stack.push(StackItem::Token(token));
+                        let token = State::Element(Quantifier::ExactlyOne, char);
+                        self.stack.push(StackItem::State(token));
                     }
                     None => return Err(ParseError::BadEscapeChar),
                 },
 
                 _ => {
-                    let token = Token::Element(Quantifier::ExactlyOne, char);
-                    self.stack.push(StackItem::Token(token));
+                    let token = State::Element(Quantifier::ExactlyOne, char);
+                    self.stack.push(StackItem::State(token));
                 }
             }
         }
 
         let stack = mem::take(&mut self.stack);
-        let result: Vec<Token> = stack
+        let result: Vec<State> = stack
             .into_iter()
             .map(|stack_item| stack_item.into())
             .collect();
@@ -80,7 +81,7 @@ impl<'a> Parser<'a> {
     fn handle_base_quantifiers(&mut self, new_quantifier: Quantifier) -> Result<(), ParseError> {
         match self.stack.last_mut() {
             Some(stack_item) => match stack_item {
-                StackItem::Token(token) => {
+                StackItem::State(token) => {
                     if *token.quantifier() != Quantifier::ExactlyOne {
                         return Err(ParseError::RepeatedQuantifier);
                     }
@@ -102,14 +103,14 @@ impl<'a> Parser<'a> {
             .ok_or(ParseError::UnexpectedQuantifier)?;
 
         match last_token {
-            StackItem::Token(token) => {
+            StackItem::State(token) => {
                 if *token.quantifier() != Quantifier::ExactlyOne {
                     return Err(ParseError::RepeatedQuantifier);
                 }
 
                 let mut one_more = token.clone();
                 one_more.set_quantifier(Quantifier::ZeroOrMore);
-                self.stack.push(StackItem::Token(one_more));
+                self.stack.push(StackItem::State(one_more));
 
                 Ok(())
             }
@@ -120,14 +121,14 @@ impl<'a> Parser<'a> {
 
 #[derive(Debug)]
 enum StackItem {
-    Token(Token),
+    State(State),
     GroupOpen,
 }
 
-impl From<StackItem> for Token {
+impl From<StackItem> for State {
     fn from(value: StackItem) -> Self {
         match value {
-            StackItem::Token(token) => token,
+            StackItem::State(token) => token,
             StackItem::GroupOpen => panic!("Unclosed group found: {}", ParseError::NoGroupToClose),
         }
     }
@@ -140,14 +141,22 @@ mod tests {
     // TODO -> more cases for unclosing group
 
     #[test]
+    fn generic() {
+        let mut parser = Parser::new("a?(b.*c)+d");
+        let res = parser.parse();
+
+        dbg!(res);
+    }
+
+    #[test]
     fn test_simple_characters() {
         let mut parser = Parser::new("abc");
         let res = parser.parse().unwrap();
 
         assert_eq!(res.len(), 3);
-        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, 'a'));
-        assert_eq!(res[1], Token::Element(Quantifier::ExactlyOne, 'b'));
-        assert_eq!(res[2], Token::Element(Quantifier::ExactlyOne, 'c'));
+        assert_eq!(res[0], State::Element(Quantifier::ExactlyOne, 'a'));
+        assert_eq!(res[1], State::Element(Quantifier::ExactlyOne, 'b'));
+        assert_eq!(res[2], State::Element(Quantifier::ExactlyOne, 'c'));
     }
 
     #[test]
@@ -156,9 +165,9 @@ mod tests {
         let res = parser.parse().unwrap();
 
         assert_eq!(res.len(), 3);
-        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, 'a'));
-        assert_eq!(res[1], Token::Wildcard(Quantifier::ExactlyOne));
-        assert_eq!(res[2], Token::Element(Quantifier::ExactlyOne, 'c'));
+        assert_eq!(res[0], State::Element(Quantifier::ExactlyOne, 'a'));
+        assert_eq!(res[1], State::Wildcard(Quantifier::ExactlyOne));
+        assert_eq!(res[2], State::Element(Quantifier::ExactlyOne, 'c'));
     }
 
     #[test]
@@ -167,7 +176,7 @@ mod tests {
         let res = parser.parse().unwrap();
 
         assert_eq!(res.len(), 1);
-        assert_eq!(res[0], Token::Element(Quantifier::ZeroOrOne, 'a'));
+        assert_eq!(res[0], State::Element(Quantifier::ZeroOrOne, 'a'));
     }
 
     #[test]
@@ -176,7 +185,7 @@ mod tests {
         let res = parser.parse().unwrap();
 
         assert_eq!(res.len(), 1);
-        assert_eq!(res[0], Token::Element(Quantifier::ZeroOrMore, 'a'));
+        assert_eq!(res[0], State::Element(Quantifier::ZeroOrMore, 'a'));
     }
 
     #[test]
@@ -185,8 +194,8 @@ mod tests {
         let res = parser.parse().unwrap();
 
         assert_eq!(res.len(), 2);
-        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, 'a'));
-        assert_eq!(res[1], Token::Element(Quantifier::ZeroOrMore, 'a'));
+        assert_eq!(res[0], State::Element(Quantifier::ExactlyOne, 'a'));
+        assert_eq!(res[1], State::Element(Quantifier::ZeroOrMore, 'a'));
     }
 
     #[test]
@@ -195,7 +204,7 @@ mod tests {
         let res = parser.parse().unwrap();
 
         assert_eq!(res.len(), 1);
-        assert_eq!(res[0], Token::Wildcard(Quantifier::ZeroOrMore));
+        assert_eq!(res[0], State::Wildcard(Quantifier::ZeroOrMore));
     }
 
     #[test]
@@ -204,9 +213,9 @@ mod tests {
         let res = parser.parse().unwrap();
 
         assert_eq!(res.len(), 3);
-        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, '+'));
-        assert_eq!(res[1], Token::Element(Quantifier::ExactlyOne, '?'));
-        assert_eq!(res[2], Token::Element(Quantifier::ExactlyOne, '*'));
+        assert_eq!(res[0], State::Element(Quantifier::ExactlyOne, '+'));
+        assert_eq!(res[1], State::Element(Quantifier::ExactlyOne, '?'));
+        assert_eq!(res[2], State::Element(Quantifier::ExactlyOne, '*'));
     }
 
     #[test]
@@ -215,8 +224,8 @@ mod tests {
         let res = parser.parse().unwrap();
 
         assert_eq!(res.len(), 2);
-        assert_eq!(res[0], Token::Element(Quantifier::ExactlyOne, 'a'));
-        assert_eq!(res[1], Token::Element(Quantifier::ExactlyOne, 'b'));
+        assert_eq!(res[0], State::Element(Quantifier::ExactlyOne, 'a'));
+        assert_eq!(res[1], State::Element(Quantifier::ExactlyOne, 'b'));
     }
 
     #[test]
@@ -226,11 +235,11 @@ mod tests {
 
         assert_eq!(res.len(), 1);
         match &res[0] {
-            Token::GroupElement(q, tokens) => {
+            State::GroupElement(q, tokens) => {
                 assert_eq!(*q, Quantifier::ExactlyOne);
                 assert_eq!(tokens.len(), 2);
-                assert_eq!(tokens[0], Token::Element(Quantifier::ExactlyOne, 'a'));
-                assert_eq!(tokens[1], Token::Element(Quantifier::ExactlyOne, 'b'));
+                assert_eq!(tokens[0], State::Element(Quantifier::ExactlyOne, 'a'));
+                assert_eq!(tokens[1], State::Element(Quantifier::ExactlyOne, 'b'));
             }
             _ => panic!("Expected GroupElement"),
         }
@@ -243,7 +252,7 @@ mod tests {
 
         assert_eq!(res.len(), 1);
         match &res[0] {
-            Token::GroupElement(q, _) => {
+            State::GroupElement(q, _) => {
                 assert_eq!(*q, Quantifier::ZeroOrOne);
             }
             _ => panic!("Expected GroupElement"),
@@ -257,22 +266,22 @@ mod tests {
 
         assert_eq!(res.len(), 1);
         match &res[0] {
-            Token::GroupElement(q, outer_tokens) => {
+            State::GroupElement(q, outer_tokens) => {
                 assert_eq!(*q, Quantifier::ExactlyOne);
                 assert_eq!(outer_tokens.len(), 3); // a, (bc), d
 
-                assert_eq!(outer_tokens[0], Token::Element(Quantifier::ExactlyOne, 'a'));
+                assert_eq!(outer_tokens[0], State::Element(Quantifier::ExactlyOne, 'a'));
 
                 match &outer_tokens[1] {
-                    Token::GroupElement(_, inner_tokens) => {
+                    State::GroupElement(_, inner_tokens) => {
                         assert_eq!(inner_tokens.len(), 2);
-                        assert_eq!(inner_tokens[0], Token::Element(Quantifier::ExactlyOne, 'b'));
-                        assert_eq!(inner_tokens[1], Token::Element(Quantifier::ExactlyOne, 'c'));
+                        assert_eq!(inner_tokens[0], State::Element(Quantifier::ExactlyOne, 'b'));
+                        assert_eq!(inner_tokens[1], State::Element(Quantifier::ExactlyOne, 'c'));
                     }
                     _ => panic!("Expected nested GroupElement"),
                 }
 
-                assert_eq!(outer_tokens[2], Token::Element(Quantifier::ExactlyOne, 'd'));
+                assert_eq!(outer_tokens[2], State::Element(Quantifier::ExactlyOne, 'd'));
             }
             _ => panic!("Expected GroupElement"),
         }
@@ -285,7 +294,7 @@ mod tests {
 
         assert_eq!(res.len(), 2);
         match (&res[0], &res[1]) {
-            (Token::GroupElement(_, g1), Token::GroupElement(_, g2)) => {
+            (State::GroupElement(_, g1), State::GroupElement(_, g2)) => {
                 assert_eq!(g1.len(), 2);
                 assert_eq!(g2.len(), 2);
             }
@@ -369,7 +378,7 @@ mod tests {
 
         assert_eq!(res.len(), 1);
         match &res[0] {
-            Token::GroupElement(_, tokens) => {
+            State::GroupElement(_, tokens) => {
                 assert_eq!(tokens.len(), 0);
             }
             _ => panic!("Expected GroupElement"),
